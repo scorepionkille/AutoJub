@@ -1,0 +1,75 @@
+name: Deploy to Vercel
+
+on:
+  # ✅ รอ CI ผ่านก่อนค่อย deploy
+  workflow_run:
+    workflows: ["CI — Build, Lint & Type Check"]
+    types: [completed]
+    branches: [main]
+  # สามารถ trigger มือได้
+  workflow_dispatch:
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  deploy:
+    name: 🚀 Deploy to Vercel
+    runs-on: ubuntu-latest
+
+    # ✅ Deploy เฉพาะเมื่อ CI สำเร็จ (ไม่ deploy ถ้า lint/build fail)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: ./app
+
+      - name: Build with Vercel
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: ./app
+
+      - name: Deploy to Vercel (Production)
+        id: deploy
+        run: |
+          URL=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          echo "deploy_url=$URL" >> $GITHUB_OUTPUT
+        working-directory: ./app
+
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployed to Vercel" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **URL** | ${{ steps.deploy.outputs.deploy_url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+
+# ──────────────────────────────────────────
+# Required GitHub Secrets:
+# ──────────────────────────────────────────
+# VERCEL_TOKEN        — Personal access token from vercel.com/account/tokens
+# VERCEL_ORG_ID       — From .vercel/project.json (run `vercel link` locally first)
+# VERCEL_PROJECT_ID   — From .vercel/project.json
+#
+# ──────────────────────────────────────────
+# วิธีตั้งค่า Vercel ครั้งแรก:
+# ──────────────────────────────────────────
+# 1. cd app
+# 2. npx vercel link        → เลือก project
+# 3. cat .vercel/project.json → copy orgId + projectId
+# 4. ไปที่ GitHub → Settings → Secrets → ใส่ค่า 3 ตัวด้านบน

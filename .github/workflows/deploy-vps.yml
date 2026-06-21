@@ -1,0 +1,138 @@
+name: Deploy to VPS
+
+on:
+  # ✅ รอ CI ผ่านก่อนค่อย deploy
+  workflow_run:
+    workflows: ["CI — Build, Lint & Type Check"]
+    types: [completed]
+    branches: [main]
+  # สามารถ trigger มือได้
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "20"
+  APP_DIR: "~/worklog"
+
+jobs:
+  deploy:
+    name: 🖥️ Deploy to VPS
+    runs-on: ubuntu-latest
+
+    # ✅ Deploy เฉพาะเมื่อ CI สำเร็จ
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+
+            echo "══════════════════════════════════════"
+            echo "🚀 Starting deployment..."
+            echo "══════════════════════════════════════"
+
+            # ──── 1. ตั้งค่า Node.js (ผ่าน nvm) ────
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+            nvm use 20 || nvm install 20
+
+            # ──── 2. Clone / Pull code ────
+            if [ ! -d "${{ env.APP_DIR }}" ]; then
+              echo "📥 First deploy — cloning repo..."
+              git clone ${{ github.server_url }}/${{ github.repository }}.git ${{ env.APP_DIR }}
+            fi
+
+            cd ${{ env.APP_DIR }}
+            git fetch origin main
+            git reset --hard origin/main
+
+            # ──── 3. Install dependencies ────
+            cd app
+            echo "📦 Installing dependencies..."
+            npm ci --omit=dev
+
+            # ──── 4. Generate Prisma Client ────
+            echo "🗃️ Generating Prisma Client..."
+            npx prisma generate
+
+            # ──── 5. Run database migrations ────
+            echo "🔄 Running database migrations..."
+            npx prisma migrate deploy
+
+            # ──── 6. Build Next.js ────
+            echo "🏗️ Building Next.js..."
+            npm run build
+
+            # ──── 7. Restart with PM2 ────
+            echo "♻️ Restarting application..."
+            if pm2 describe worklog > /dev/null 2>&1; then
+              pm2 restart worklog --update-env
+            else
+              pm2 start npm --name "worklog" -- start
+            fi
+
+            pm2 save
+
+            echo ""
+            echo "══════════════════════════════════════"
+            echo "✅ Deployed successfully!"
+            echo "══════════════════════════════════════"
+
+      - name: Deployment summary
+        run: |
+          echo "## 🖥️ Deployed to VPS" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Host** | \`${{ secrets.VPS_HOST }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | main |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+
+# ──────────────────────────────────────────
+# Required GitHub Secrets:
+# ──────────────────────────────────────────
+# VPS_HOST     — Server IP or hostname (e.g. 203.0.113.50)
+# VPS_USER     — SSH username (e.g. deploy)
+# VPS_SSH_KEY  — Private SSH key (ed25519 or rsa)
+# VPS_PORT     — (Optional) SSH port, defaults to 22
+#
+# ──────────────────────────────────────────
+# เตรียม Server ครั้งแรก:
+# ──────────────────────────────────────────
+# 1. ติดตั้ง Node.js:
+#      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+#      nvm install 20
+#
+# 2. ติดตั้ง PM2:
+#      npm install -g pm2
+#      pm2 startup     ← ให้ PM2 start ตอน server reboot
+#
+# 3. ติดตั้ง PostgreSQL หรือใช้ remote DB
+#
+# 4. สร้าง .env ที่ ~/worklog/app/.env:
+#      DATABASE_URL="postgresql://user:pass@localhost:5432/worklog"
+#      NEXTAUTH_SECRET="your-secret-here"
+#      NEXTAUTH_URL="https://your-domain.com"
+#
+# 5. ตั้ง Nginx reverse proxy (port 3000 → 80/443):
+#      server {
+#          listen 80;
+#          server_name your-domain.com;
+#          location / {
+#              proxy_pass http://localhost:3000;
+#              proxy_http_version 1.1;
+#              proxy_set_header Upgrade $http_upgrade;
+#              proxy_set_header Connection 'upgrade';
+#              proxy_set_header Host $host;
+#              proxy_cache_bypass $http_upgrade;
+#          }
+#      }
