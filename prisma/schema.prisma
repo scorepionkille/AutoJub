@@ -14,10 +14,18 @@ model user_info {
   email        String       @unique
   name         String?
   passwordHash String
+  role         UserRole     @default(CUSTOMER)
+  avatarUrl    String?
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
   tasks        tasks[]
   categories   categories[]
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+  STAFF
 }
 
 model tasks {
